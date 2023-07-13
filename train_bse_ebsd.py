@@ -83,6 +83,8 @@ def train_model(
     criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
     global_step = 0
 
+    # menasche add the augmentor: 
+    
     # 5. Begin training
     for epoch in range(1, epochs + 1):
         model.train()
@@ -96,6 +98,19 @@ def train_model(
                     f'but loaded images have {images.shape[1]} channels. Please check that ' \
                     'the images are loaded correctly.'
 
+                ## Can add data aug here:
+                print( images.size() )
+                print( true_masks.size() )
+                #
+                # torch.Size([1, 1, 300, 300])
+                # torch.Size([1, 300, 300])
+                #
+                # if batch_size = 8,
+                # torch.Size([8, 1, 300, 300])
+                # torch.Size([8, 300, 300])
+
+                exit()
+                
                 images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                 true_masks = true_masks.to(device=device, dtype=torch.long)
 

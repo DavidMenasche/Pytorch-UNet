@@ -15,6 +15,9 @@ ADD requirements.txt .
 RUN pip install --user --no-cache-dir --upgrade --pre pip
 RUN pip install --user --no-cache-dir -r requirements.txt
 
+RUN pip install --user --no-cache-dir kornia
+RUN pip install --user --no-cache-dir kornia-rs
+
 #RUN pip install --no-cache-dir --upgrade --pre pip
 #RUN pip install --no-cache-dir -r requirements.txt
 
