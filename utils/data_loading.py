@@ -28,9 +28,22 @@ def load_image(filename):
         return cv2.imread( str(filename),-1)
     elif ext == '.png':
         return cv2.imread( str(filename) ,-1)
+        #return cv2.imread( str(filename) )
     else:
         return Image.open(filename)
 
+def load_color_image(filename):
+    ext = splitext(filename)[1]
+    if ext == '.png':
+        return cv2.imread( str(filename) )
+    else:
+        return Image.open(filename)
+
+def load_mask( filename ):
+    ext = splitext(filename)[1]
+    if ext == '.png':
+        return cv2.imread( str(filename) ,-1)
+    
 
 def unique_mask_values(idx, mask_dir, mask_suffix):
     mask_file = list(mask_dir.glob(idx + mask_suffix + '.*'))[0]
@@ -164,11 +177,6 @@ class BSE_EBSD_Dataset(BasicDataset):
 
             return img
 
-    @staticmethod
-    def augment( albumentations_transform_obj , img , mask ):
-        transformed = albumentations_transform_obj( image=img, mask=mask )
-        return transformed['image'], transformed['mask']
-                        
     def __getitem__(self, idx ):
             
         name = self.ids[idx]
@@ -180,29 +188,74 @@ class BSE_EBSD_Dataset(BasicDataset):
         mask = load_image(mask_file[0])
         img = load_image(img_file[0])
 
-        #print( "Mask shape: ", mask.shape )
-        #print( "img shape: ", img.shape )
-        
         assert img.size == mask.size, \
             f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
         img = self.preprocess(self.mask_values, img, self.scale, is_mask=False)
         mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True)
-        """
-        if bAugment:
-            transform = A.Compose([
-                A.HorizontalFlip(p=0.5),
-                A.VerticalFlip(p=0.5),
-                #A.ShiftScaleRotate(border_mode=cv2.BORDER_CONSTANT, 
-                #                   scale_limit=0.3,
-                #                   rotate_limit=(10, 30),
-                #                   p=0.5)
-                A.Rotate(limit=45,p=1)
-            ], p=1,is_check_shapes=False)
-            img, mask = self.augment( transform, img, mask )
-            #print( type(img) , img.shape )
-            #print( type( mask ) , mask.shape )
-        """
+
+        return {
+            'image': torch.as_tensor(img.copy()).float().contiguous(),
+            'mask': torch.as_tensor(mask.copy()).long().contiguous()
+        }
+
+
+class BSE_EBSD_Dataset_3Channel(BasicDataset):
+    def __init__(self, images_dir, mask_dir, scale=1):
+        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
+
+    @staticmethod
+    def preprocess(mask_values, cv2_img, scale, is_mask):
+        if is_mask:
+            w, h = cv2_img.shape
+        else:
+            w, h, d = cv2_img.shape
+        newW, newH = int(scale * w), int(scale * h)
+        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+
+        #pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+        if is_mask: 
+            cv2_img = cv2.resize( cv2_img, (newW,newH), cv2.INTER_NEAREST )
+        else:
+            cv2_img = cv2.resize( cv2_img , (newW, newH), cv2.INTER_LINEAR )
+     
+        img = np.asarray(cv2_img,dtype=np.float32)            
+        #img = np.asarray(cv2_img)
+
+        if is_mask:
+            mask = np.zeros((newH, newW), dtype=np.int64)
+            for i, v in enumerate(mask_values):
+                if img.ndim == 2:
+                    mask[img == v] = i
+                else:
+                    mask[(img == v).all(-1)] = i
+            return mask
+        
+        else:
+            if img.ndim == 2:
+                img = img[np.newaxis, ...]
+            else:
+                img = img.transpose((2, 0, 1))
+
+            if (img > 1).any():
+                img = img / ( 255 )
+
+            return img
+
+    def __getitem__(self, idx ):
+            
+        name = self.ids[idx]
+        mask_file = list(self.mask_dir.glob(name + self.mask_suffix + '.*'))
+        img_file = list(self.images_dir.glob(name + '.*'))
+
+        assert len(img_file) == 1, f'Either no image or multiple images found for the ID {name}: {img_file}'
+        assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {name}: {mask_file}'
+        mask = load_mask(mask_file[0])
+        img = load_color_image(img_file[0])
+
+        img = self.preprocess(self.mask_values, img, self.scale, is_mask=False)
+        mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True)
+
         return {
             'image': torch.as_tensor(img.copy()).float().contiguous(),
             'mask': torch.as_tensor(mask.copy()).long().contiguous()

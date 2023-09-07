@@ -1,0 +1,36 @@
+program: train_bse_ebsd_topoloss.py
+method: bayes
+metric:
+  goal: minimize
+  name: validation Dice
+parameters:
+  save_checkpoint:
+    values:
+      - "true"
+      - "false"
+    distribution: categorical
+  learning_rate:
+    max: 0.00002
+    min: 0.000005
+    distribution: uniform
+  val_percent:
+    max: 0.2
+    min: 0.05
+    distribution: uniform
+  batch_size:
+    max: 2
+    min: 1
+    distribution: int_uniform
+  img_scale:
+    max: 2
+    min: 1
+    distribution: int_uniform
+  epochs:
+    max: 60
+    min: 6
+    distribution: int_uniform
+  amp:
+    values:
+      - "true"
+      - "false"
+    distribution: categorical

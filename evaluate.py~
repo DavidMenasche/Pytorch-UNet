@@ -29,8 +29,7 @@ def evaluate(net, dataloader, device, amp):
                 # compute the Dice score
                 #print( mask_pred.size() )
                 #print( mask_true.size() )
-
-                # menasche added squeeze(1) 
+                
                 dice_score += dice_coeff(mask_pred.squeeze(1), mask_true, reduce_batch_first=False)
             else:
                 assert mask_true.min() >= 0 and mask_true.max() < net.n_classes, 'True mask indices should be in [0, n_classes['

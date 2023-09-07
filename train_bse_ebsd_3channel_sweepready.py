@@ -12,21 +12,26 @@ from pathlib import Path
 from torch import optim
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
+import datetime
 
 import wandb
 from evaluate import evaluate
 from unet import UNet
-from utils.data_loading import BasicDataset, CarvanaDataset, BSE_EBSD_Dataset
+from utils.data_loading import BasicDataset, CarvanaDataset, BSE_EBSD_Dataset, BSE_EBSD_Dataset_3Channel
 from utils.dice_score import dice_loss
 
 import kornia
 from kornia.augmentation import RandomRotation, RandomHorizontalFlip, RandomVerticalFlip
 
-dir_img = Path('./data/imgs/')
+sys.path.append( "/home/appuser/data/TopoLoss/" )
+import topoloss_pytorch
+
+import numpy as np
+
+
+dir_img = Path('./data/color-imgs/')
 dir_mask = Path('./data/masks/')
-dir_checkpoint = Path('./checkpoints/')
-
-
+#_lambda = 1e-5
 
 def train_model(
         model,
@@ -41,11 +46,17 @@ def train_model(
         weight_decay: float = 1e-8,
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
+        _lambda: float = 1e-5,
+        sOptimizer: str = 'rmsprop'
 ):
+
+    # do this after we get set up.
+    pretrain_epoch = epochs-3;
+
     # 1. Create dataset
     try:
         # dataset = CarvanaDataset(dir_img, dir_mask, img_scale)
-        dataset = BSE_EBSD_Dataset( dir_img, dir_mask, img_scale)
+        dataset = BSE_EBSD_Dataset_3Channel( dir_img, dir_mask, img_scale)
     except (AssertionError, RuntimeError, IndexError):
         dataset = BasicDataset(dir_img, dir_mask, img_scale)
 
@@ -60,7 +71,7 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-BSE', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-BSE-topo-3Channel-sweep', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
              val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
@@ -78,9 +89,23 @@ def train_model(
         Mixed Precision: {amp}
     ''')
 
+    t=datetime.datetime.now();
+    dir_checkpoint = Path('./{}_checkpoints_{}'.format( experiment.name , t.strftime("%Y-%m-%d-%H.%M.%S") ) )
+
+    if not os.path.exists(dir_checkpoint):
+        os.makedirs(dir_checkpoint)
+    else:
+        print('Abort before rewriting exp..')
+        exit()
+
+
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
-    optimizer = optim.RMSprop(model.parameters(),
-                              lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
+    if sOptimizer == "rmsprop":
+        optimizer = optim.RMSprop(model.parameters(),
+                                  lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
+    elif sOptimizer == 'adam':
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate,foreach=True)
+    
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=epochs)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
     criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
@@ -93,7 +118,8 @@ def train_model(
                                                             RandomVerticalFlip(p=0.5),
                                                             data_keys=["image","mask"],
                                                             same_on_batch=False )
-    
+
+    bDebug = False
     # 5. Begin training
     for epoch in range(1, epochs + 1):
         model.train()
@@ -107,17 +133,7 @@ def train_model(
                     f'but loaded images have {images.shape[1]} channels. Please check that ' \
                     'the images are loaded correctly.'
 
-                ## Can add data aug here:
-                # print( images.size() )
-                # print( true_masks.size() )
-                #
-                # torch.Size([1, 1, 300, 300])
-                # torch.Size([1, 300, 300])
-                #
-                # if batch_size = 8,
-                # torch.Size([8, 1, 300, 300])
-                # torch.Size([8, 300, 300])
-
+                # menasche added augmentation
                 out = augmentor( images, true_masks.type(torch.float32).reshape(-1,1, true_masks.size()[1], true_masks.size()[2]) )
                 images = out[0]
                 true_masks = out[1].reshape(-1,true_masks.size()[1],true_masks.size()[2] )
@@ -128,9 +144,13 @@ def train_model(
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
                     if model.n_classes == 1:
+
                         loss = criterion(masks_pred.squeeze(1), true_masks.float())
-                        loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
+                        loss += dice_loss(F.sigmoid(masks_pred).squeeze(1), true_masks.float(), multiclass=False)
+                        if epoch > pretrain_epoch:
+                            loss += _lambda*topoloss_pytorch.getTopoLoss( F.sigmoid(masks_pred.squeeze(1)) , true_masks.float(), topo_size=148 )                            
                     else:
+
                         loss = criterion(masks_pred, true_masks)
                         loss += dice_loss(
                             F.softmax(masks_pred, dim=1).float(),
@@ -165,27 +185,60 @@ def train_model(
                                 histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
                             if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                                 histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
-
+                            
                         val_score = evaluate(model, val_loader, device, amp)
                         scheduler.step(val_score)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
+
+                        #tmp = masks_pred[0,0,:,:].float().cpu().detach().clone().numpy()
+                        #tmp[ tmp >= 0.5] = 1;
+                        #tmp[ tmp < 0.5 ] = 0
+
+                        tmp = masks_pred[0,0,:,:].clone()
+                        tmp[ tmp >= 0.5 ] = 1
+                        tmp[ tmp < 0.5 ] = 0
+                        
+                        # menasche: this code block could reasonably be put inside evaluate( net, dataloader, device, amp), but
+                        # in doing so, we have to choose between two uglinesses: 1) pass the "experiment" instance of wandb.Run
+                        # or modify the return values of evaluate to include the val_pred = model( val_images )
+                        
+                        model.eval()
+                        with torch.no_grad():
+                            with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):          
+                                for batch in val_loader:
+                                    val_images, val_true_masks = batch['image'], batch['mask']
+                                    val_images = val_images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+                                    val_pred = model( val_images )
+                                    continue
+                        model.train()
+
+                        val_pred[ val_pred >= 0.5 ] = 1
+                        val_pred[ val_pred < 0.5 ] = 0
+                                                
+                        
                         try:
                             experiment.log({
                                 'learning rate': optimizer.param_groups[0]['lr'],
                                 'validation Dice': val_score,
                                 'images': wandb.Image(images[0].cpu()),
-                                'masks': {
-                                    'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
+                                'training diagnostic': {
+                                    'mask': wandb.Image(true_masks[0].float().cpu()),
+                                    #'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
+                                    #'pred': wandb.Image(masks_pred[0,0,:,:].argmax(dim=0)[0].float().cpu()),
+                                    'prediction': wandb.Image( tmp.float().cpu() )                                    
                                 },
+                                'validation diagnostic': {
+                                    'mask': wandb.Image( val_true_masks[0].float().cpu() ),
+                                    'prediction': wandb.Image( val_pred[0,0,:,:].float().cpu() )
+                                },                                                         
                                 'step': global_step,
                                 'epoch': epoch,
                                 **histograms
                             })
                         except:
                             pass
-
+                       
         if save_checkpoint:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
@@ -211,9 +264,132 @@ def get_args():
     return parser.parse_args()
 
 
+def sweepfcn2( config=None ):
+    with wandb.init(config=config):
+        config = wandb.config        
+        logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        logging.info(f'Using device {device}')
+        
+        # Change here to adapt to your data
+        # n_channels=3 for RGB images
+        # n_classes is the number of probabilities you want to get per pixel
+        model = UNet(n_channels=3, n_classes=config.classes, bilinear=config.bilinear)
+        model = model.to(memory_format=torch.channels_last)
+        
+        logging.info(f'Network:\n'
+                     f'\t{model.n_channels} input channels\n'
+                     f'\t{model.n_classes} output channels (classes)\n'
+                     f'\t{"Bilinear" if model.bilinear else "Transposed conv"} upscaling')
+        
+        if config.load:
+            state_dict = torch.load(config.load, map_location=device)
+            del state_dict['mask_values']
+            model.load_state_dict(state_dict)
+            logging.info(f'Model loaded from {config.load}')
+
+        model.to(device=device)
+        try:
+            train_model(
+                model=model,
+                epochs=config.epochs,
+                batch_size=config.batch_size,
+                learning_rate=config.lr,
+                device=device,
+                img_scale=config.scale,
+                val_percent=config.val / 100,
+                amp=config.amp,
+                _lambda=config._lambda,
+                sOptimizer=config.sOptimizer
+            )
+        except torch.cuda.OutOfMemoryError:
+            logging.error('Detected OutOfMemoryError! '
+                          'Enabling checkpointing to reduce memory usage, but this slows down training. '
+                          'Consider enabling AMP (--amp) for fast and memory efficient training')
+            torch.cuda.empty_cache()
+            model.use_checkpointing()
+            train_model(
+                model=model,
+                epochs=config.epochs,
+                batch_size=config.batch_size,
+                learning_rate=config.lr,
+                device=device,
+                img_scale=config.scale,
+                val_percent=config.val / 100,
+                amp=config.amp,
+                _lambda=config._lambda,
+                sOptimizer=config.sOptimizer                
+            )
+
+if __name__ == '__main__':
+
+    par_dict = {
+        'classes':{
+            'value' : 2
+        },
+        'amp' : {
+            'value' : True
+        },
+        'bilinear' : {
+            'value' : False
+        },
+        'val' : {
+            'value' : 10
+        },
+        'scale' : {
+            'value' : 1.0
+        },
+        'load' : {
+            'value' : False
+        },
+        'lr' : {
+            'distribution' : 'uniform',
+            'min' : 1e-7 ,
+            'max' : 1e-3
+        },
+        'batch_size' : {
+            'values' : [8,10,12,14]
+        },
+        'epochs' : {
+            'values' : [15,20]
+        },
+        '_lambda' : {
+            'distribution' : 'uniform',
+            'min' : 1e-7 ,
+            'max' : 1e-3
+        },
+        'sOptimizer' : {
+            'value' : 'adam'
+        }
+    }
+        
+    sweep_configuration = {
+        'method': 'random',
+        'metric': 
+        {
+            'goal': 'minimize', 
+            'name': 'loss'
+        },
+        'parameters': par_dict
+    }
+    import pprint
+    pprint.pprint( sweep_configuration )
+    print( "starting sweep" )
+    # 3: Start the sweep
+    sweep_id = wandb.sweep(
+        sweep=sweep_configuration, 
+        project='U-Net-BSE-topo-3Channel-sweep'
+    )
+
+    wandb.agent(sweep_id, function=sweepfcn2, count=20)
+
+
+        
+"""
 if __name__ == '__main__':
     args = get_args()
-
+    print( args )
+    exit
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
@@ -221,7 +397,7 @@ if __name__ == '__main__':
     # Change here to adapt to your data
     # n_channels=3 for RGB images
     # n_classes is the number of probabilities you want to get per pixel
-    model = UNet(n_channels=1, n_classes=args.classes, bilinear=args.bilinear)
+    model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
     model = model.to(memory_format=torch.channels_last)
 
     logging.info(f'Network:\n'
@@ -263,3 +439,6 @@ if __name__ == '__main__':
             val_percent=args.val / 100,
             amp=args.amp
         )
+
+
+"""

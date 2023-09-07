@@ -22,10 +22,9 @@ from utils.dice_score import dice_loss
 import kornia
 from kornia.augmentation import RandomRotation, RandomHorizontalFlip, RandomVerticalFlip
 
-dir_img = Path('./data/imgs/')
+dir_img = Path('./data/color-imgs/')
 dir_mask = Path('./data/masks/')
 dir_checkpoint = Path('./checkpoints/')
-
 
 
 def train_model(
