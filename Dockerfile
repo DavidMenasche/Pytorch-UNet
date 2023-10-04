@@ -25,6 +25,9 @@ RUN pip install --user --no-cache-dir -r requirements.txt
 RUN pip install --user --no-cache-dir kornia
 RUN pip install --user --no-cache-dir kornia-rs
 
+## Have not yet tested ghis line
+RUN pip install --user --no-cache-dir torcheval
+
 #RUN pip install --no-cache-dir --upgrade --pre pip
 #RUN pip install --no-cache-dir -r requirements.txt
 
