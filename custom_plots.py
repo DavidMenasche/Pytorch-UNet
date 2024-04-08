@@ -42,3 +42,25 @@ def show_components(img, labels):
 
     #plt.show()
     return plt
+
+def grain_size_distribution_histogram( sizes_gt, sizes_pred ):
+
+    hist, bins = np.histogram(sizes_gt, bins=50)
+    logbins = np.logspace(np.log10(bins[0]),np.log10(bins[-1]),len(bins))
+
+    hist2, bins2 = np.histogram(sizes_pred, bins=50)
+    logbins2 = np.logspace(np.log10(bins2[0]),np.log10(bins2[-1]),len(bins2))
+    
+    fig = plt.figure()
+    ax = fig.gca()
+    
+    ax.scatter( logbins[1:],hist/hist.sum() , s=20,marker='*',label="ground truth")
+    ax.scatter( logbins2[1:],hist/hist.sum() , s=20,marker='h',label="segmentation")
+    
+    ax.set_xlabel("Grain Size (pix)")
+    ax.set_ylabel("Relative frequency")
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.legend()
+
+    return fig

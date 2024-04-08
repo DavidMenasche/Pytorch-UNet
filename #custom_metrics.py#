@@ -1,0 +1,38 @@
+import torch
+import kornia as K
+import scipy.stats
+
+def grain_size_distribution_metric( gt , pred , image ):
+    thresh = 0.2
+    # flip the convention for kornia
+    gt = (torch.ones_like(gt)-gt).float();
+    labels_out_gt = K.contrib.connected_components( gt, num_iterations=150)
+
+    pred = (torch.ones_like(pred)-pred).float()
+    labels_out_pred  = K.contrib.connected_components( pred, num_iterations=150)
+
+    # we need the original tif
+    labels_out_gt[ image < thresh ] = -1
+    labels_out_pred[ image < thresh ] = -1
+
+    sizes_gt = torch.zeros((labels_out_gt.unique()).size()[0]-2,)
+    sizes_pred = torch.zeros((labels_out_pred.unique()).size()[0]-2,)
+
+    idx = 0
+    for label in labels_out_gt.unique():
+        # Exclude both background and grain boundaries
+        if label != -1 and label != 0:
+            sizes_gt[idx] = torch.sum( torch.isclose(label, labels_out_gt[:] ) )
+            idx+=1
+        
+    idx = 0
+    for label in labels_out_pred.unique():
+        # Exclude both background and grain boundaries
+        if label != -1 and label != 0:
+            sizes_pred[idx] = torch.sum( torch.isclose(label, labels_out_pred[:] ) )
+            idx+=1
+
+    statistic, p_value = scipy.stats.ranksums(sizes_gt,sizes_pred)
+
+    # show_components(img_t.cpu().numpy().squeeze(), labels_out.cpu().squeeze())
+    return statistic, p_value, pred, labels_out_pred, sizes_gt, sizes_pred
